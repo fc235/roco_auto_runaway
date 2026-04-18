@@ -201,11 +201,11 @@ whetherFighting() {
   AddLog("正在检查是否进入战斗...")
   if whetherEnterCombat() {
     if RunningStatus.avoidWarState == 1 {
-      AddLog("进入战斗, 正在检查是否需要自动聚气")
+      AddLog("进入战斗, 目前模式为: 自动聚气")
       ; 自动聚气
       collectEnergy()
     } else if RunningStatus.avoidWarState == 2 {
-      AddLog("进入战斗, 正在检查是否需要自动逃跑")
+      AddLog("进入战斗, 目前模式为: 自动逃跑")
       ; 自动逃跑
       exitCombat()
     }
