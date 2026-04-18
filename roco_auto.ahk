@@ -159,8 +159,8 @@ onClickGatherEnergyBtn(ctrl, *) {
     ; 修改按键文字
     ctrl.Text := "自动聚气: 开"
     UIClass.runAwayBtn.Text := "自动逃跑: 关"
-    whetherFighting()
     AddLog("自动聚气已开启")
+    whetherFighting()
     return
   }
 
@@ -179,8 +179,8 @@ onClickRunAwayBtn(ctrl, *) {
     ; 修改按键文字
     ctrl.Text := "自动逃跑: 开"
     UIClass.gatherEnergyBtn.Text := "自动聚气: 关"
-    whetherFighting()
     AddLog("自动逃跑已开启")
+    whetherFighting()
     return
   }
 
