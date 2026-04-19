@@ -17,6 +17,8 @@ class Config {
   static combatColorTolerance := 16
   static uiColorTolerance := 8
   static requiredActionNearbyMatches := 3
+  static runawayFallbackXRatio := 0.78
+  static runawayFallbackYRatio := 0.81
 }
 
 
@@ -65,6 +67,11 @@ HealthBarColor1 := 0x73c615
 HealthBarColor2 := 0xfcb641
 ; 左上角血条颜色 红色 濒死
 HealthBarColor3 := 0xaf3d3e
+
+; 逃跑确认按钮可能出现的浅色文字/高亮
+RunawayButtonColor1 := 0xf4eee1
+RunawayButtonColor2 := 0xdbd4c5
+RunawayButtonColor3 := 0xc3c3b9
 
 
 ; ================== GUI ==================
@@ -233,10 +240,48 @@ ActivateWindowById(hwnd) {
   if (windowState = -1) {
     WinRestore("ahk_id " hwnd)
   }
-  Sleep(100)
 
-  WinActivate("ahk_id " hwnd)
-  return WinWaitActive("ahk_id " hwnd, , 2)
+  if WinActive("ahk_id " hwnd) {
+    return true
+  }
+
+  targetWin := "ahk_id " hwnd
+  currentWin := WinExist("A")
+  currentThread := DllCall("GetCurrentThreadId", "UInt")
+  foregroundThread := currentWin ? DllCall("GetWindowThreadProcessId", "Ptr", currentWin, "UInt*", 0, "UInt") : 0
+  targetThread := DllCall("GetWindowThreadProcessId", "Ptr", hwnd, "UInt*", 0, "UInt")
+
+  try {
+    if foregroundThread {
+      DllCall("AttachThreadInput", "UInt", currentThread, "UInt", foregroundThread, "Int", 1)
+    }
+    if targetThread && targetThread != currentThread {
+      DllCall("AttachThreadInput", "UInt", currentThread, "UInt", targetThread, "Int", 1)
+    }
+
+    Loop 3 {
+      WinActivate(targetWin)
+      DllCall("SetForegroundWindow", "Ptr", hwnd)
+      DllCall("BringWindowToTop", "Ptr", hwnd)
+      DllCall("ShowWindow", "Ptr", hwnd, "Int", 5)
+
+      if WinWaitActive(targetWin, , 0.4) {
+        return true
+      }
+
+      SendEvent "{Alt}"
+      Sleep(80)
+    }
+  } finally {
+    if foregroundThread {
+      DllCall("AttachThreadInput", "UInt", currentThread, "UInt", foregroundThread, "Int", 0)
+    }
+    if targetThread && targetThread != currentThread {
+      DllCall("AttachThreadInput", "UInt", currentThread, "UInt", targetThread, "Int", 0)
+    }
+  }
+
+  return WinActive(targetWin)
 }
 
 GetGameClientArea(&x, &y, &width, &height, activate := false) {
@@ -286,6 +331,78 @@ GetActionAreaBounds(windowX, windowY, windowW, windowH, &startX, &startY, &endX,
   endX := Round(windowX + windowW * 0.18)
   startY := Round(windowY + windowH * 0.76)
   endY := Round(windowY + windowH)
+}
+
+GetHealthBarBounds(windowX, windowY, windowW, windowH, &startX, &startY, &endX, &endY) {
+  startX := Round(windowX)
+  endX := Round(windowX + windowW * 0.15)
+  startY := Round(windowY)
+  endY := Round(windowY + windowH * 0.1)
+}
+
+GetNormalAreaBounds(windowX, windowY, windowW, windowH, &startX, &startY, &endX, &endY) {
+  startX := Round(windowX)
+  startY := Round(windowY)
+  endX := Round(windowX + windowW * 0.1)
+  endY := Round(windowY + windowH * 0.1)
+}
+
+GetRunawayBounds(windowX, windowY, windowW, windowH, &startX, &startY, &endX, &endY) {
+  startX := Round(windowX + windowW * 0.45)
+  startY := Round(windowY + windowH * 0.6)
+  endX := Round(windowX + windowW)
+  endY := Round(windowY + windowH)
+}
+
+GetRunawayFocusBounds(windowX, windowY, windowW, windowH, &startX, &startY, &endX, &endY) {
+  startX := Round(windowX + windowW * 0.62)
+  startY := Round(windowY + windowH * 0.68)
+  endX := Round(windowX + windowW * 0.93)
+  endY := Round(windowY + windowH * 0.92)
+}
+
+GetRunawayFallbackPoint(windowX, windowY, windowW, windowH, &x, &y) {
+  x := Round(windowX + windowW * Config.runawayFallbackXRatio)
+  y := Round(windowY + windowH * Config.runawayFallbackYRatio)
+}
+
+FindColorPoint(startX, startY, endX, endY, colorValue, tolerance) {
+  if PixelSearch(&foundX, &foundY, startX, startY, endX, endY, colorValue, tolerance) {
+    return {x: foundX, y: foundY, color: colorValue}
+  }
+  return 0
+}
+
+FindRunawayButtonClickPoint(windowX, windowY, windowW, windowH, &clickX, &clickY) {
+  GetRunawayFocusBounds(windowX, windowY, windowW, windowH, &focusStartX, &focusStartY, &focusEndX, &focusEndY)
+  GetRunawayFallbackPoint(windowX, windowY, windowW, windowH, &fallbackX, &fallbackY)
+
+  points := []
+  runawayColors := [RunawayButtonColor1, RunawayButtonColor2, RunawayButtonColor3]
+
+  for color in runawayColors {
+    point := FindColorPoint(focusStartX, focusStartY, focusEndX, focusEndY, color, Config.uiColorTolerance)
+    if point {
+      points.Push(point)
+    }
+  }
+
+  if points.Length > 0 {
+    sumX := 0
+    sumY := 0
+    for point in points {
+      sumX += point.x
+      sumY += point.y
+    }
+
+    clickX := Round(sumX / points.Length)
+    clickY := Round(sumY / points.Length)
+    return true
+  }
+
+  clickX := fallbackX
+  clickY := fallbackY
+  return false
 }
 
 CountCombatNearbyMatches(startX, startY, endX, endY, tolerance) {
@@ -482,16 +599,15 @@ exitCombat(windowX := "", windowY := "", windowW := "", windowH := "") {
     SendKey('Esc')
     Sleep(400)
 
-    startX := Round(windowX + windowW * 0.45)
-    startY := Round(windowY + windowH * 0.6)
-    endX := Round(windowX + windowW)
-    endY := Round(windowY + windowH)
-
-    if PixelSearch(&x, &y, startX, startY, endX, endY, 0xf4eee1, Config.uiColorTolerance) {
+    foundPrecisePoint := FindRunawayButtonClickPoint(windowX, windowY, windowW, windowH, &clickX, &clickY)
+    if foundPrecisePoint {
       AddLog("开始执行逃跑操作")
-      Click(x, y + 10)
-      RunningStatus.lastRunawayTick := A_TickCount
+    } else {
+      AddLog("未精确命中逃跑按钮, 使用自适应坐标兜底")
     }
+
+    Click(clickX, clickY)
+    RunningStatus.lastRunawayTick := A_TickCount
   }
 }
 
