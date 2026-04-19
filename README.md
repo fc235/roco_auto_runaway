@@ -6,7 +6,7 @@
 牵小号刷污染的时候, 小号可以自动聚气  
 测试设备为2560x1440, 最大可能进行了分辨率兼容
 
-待开发功能: 
-自动牵手
+原项目基础上让ai改了一下，bug肯定有，先用着。
+更改：洛克王国1080p窗口化放副屏，可以识别操作。
 <img width="1192" height="656" alt="image" src="https://github.com/user-attachments/assets/176b30c2-f3b5-4d33-bbcb-9a7e54fb520c" />
 
