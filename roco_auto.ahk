@@ -11,6 +11,12 @@ class Config {
   static defaultGameProcess := "NRC-Win64-Shipping.exe"
   static targetMode := "窗口标题"
   static targetValue := "洛克王国：世界"
+  static monitorIntervalMs := 250
+  static gatherActionCooldownMs := 2200
+  static runawayActionCooldownMs := 1500
+  static combatColorTolerance := 16
+  static uiColorTolerance := 8
+  static requiredActionNearbyMatches := 3
 }
 
 
@@ -18,6 +24,9 @@ class Config {
 class RunningStatus {
   ; 是否启动自动聚气/逃跑 0: 关闭 1:自动聚气 2:自动逃跑
   static avoidWarState := 0
+  static isInCombat := false
+  static lastGatherTick := 0
+  static lastRunawayTick := 0
 }
 
 ; ui实例类
@@ -212,33 +221,18 @@ BuildGameWinMatcher(mode, value) {
 
 GetGameHwnd() {
   matcher := BuildGameWinMatcher(Config.targetMode, Config.targetValue)
-  if (matcher != "") {
-    hwnd := WinExist(matcher)
-    if hwnd {
-      return hwnd
-    }
-  }
-
-  if (Config.targetMode != "窗口标题" || Config.targetValue != Config.defaultGameWindowTitle) {
-    hwnd := WinExist(Config.defaultGameWindowTitle)
-    if hwnd {
-      return hwnd
-    }
-  }
-
-  if (Config.targetMode != "进程名" || Config.targetValue != Config.defaultGameProcess) {
-    hwnd := WinExist("ahk_exe " Config.defaultGameProcess)
-    if hwnd {
-      return hwnd
-    }
-  }
-
-  return 0
+  return matcher != "" ? WinExist(matcher) : 0
 }
 
 ActivateWindowById(hwnd) {
   WinShow("ahk_id " hwnd)
-  WinRestore("ahk_id " hwnd)
+  try windowState := WinGetMinMax("ahk_id " hwnd)
+  catch
+    windowState := 0
+
+  if (windowState = -1) {
+    WinRestore("ahk_id " hwnd)
+  }
   Sleep(100)
 
   WinActivate("ahk_id " hwnd)
@@ -271,6 +265,59 @@ GetGameClientArea(&x, &y, &width, &height, activate := false) {
   return hwnd
 }
 
+ResetCombatState() {
+  RunningStatus.isInCombat := false
+  RunningStatus.lastGatherTick := 0
+  RunningStatus.lastRunawayTick := 0
+}
+
+StartMonitoring() {
+  ResetCombatState()
+  SetTimer(MonitorCombat, Config.monitorIntervalMs)
+}
+
+StopMonitoring() {
+  SetTimer(MonitorCombat, 0)
+  ResetCombatState()
+}
+
+GetActionAreaBounds(windowX, windowY, windowW, windowH, &startX, &startY, &endX, &endY) {
+  startX := Round(windowX)
+  endX := Round(windowX + windowW * 0.18)
+  startY := Round(windowY + windowH * 0.76)
+  endY := Round(windowY + windowH)
+}
+
+CountCombatNearbyMatches(startX, startY, endX, endY, tolerance) {
+  matches := 0
+  nearbyColors := [EnergyColorNearby_1, EnergyColorNearby_2, EnergyColorNearby_3, EnergyColorNearby_4, EnergyColorNearby_5]
+
+  for color in nearbyColors {
+    if PixelSearch(&_, &_, startX, startY, endX, endY, color, tolerance) {
+      matches += 1
+    }
+  }
+
+  return matches
+}
+
+IsCombatActionVisible(windowX, windowY, windowW, windowH, tolerance := "") {
+  if (tolerance = "") {
+    tolerance := Config.combatColorTolerance
+  }
+
+  GetActionAreaBounds(windowX, windowY, windowW, windowH, &startX, &startY, &endX, &endY)
+  if !PixelSearch(&_, &_, startX, startY, endX, endY, EnergyColor, tolerance) {
+    return false
+  }
+
+  return CountCombatNearbyMatches(startX, startY, endX, endY, tolerance) >= Config.requiredActionNearbyMatches
+}
+
+CanRunAction(lastTick, cooldownMs) {
+  return (lastTick = 0) || (A_TickCount - lastTick >= cooldownMs)
+}
+
 
 ; 按键事件
 ; 自动聚气
@@ -282,7 +329,7 @@ onClickGatherEnergyBtn(ctrl, *) {
     ctrl.Text := "自动聚气: 开"
     UIClass.runAwayBtn.Text := "自动逃跑: 关"
     AddLog("自动聚气已开启")
-    whetherFighting()
+    StartMonitoring()
     return
   }
 
@@ -290,6 +337,8 @@ onClickGatherEnergyBtn(ctrl, *) {
   RunningStatus.avoidWarState := 0
   ; 修改按键文字
   ctrl.Text := "自动聚气: 关"
+  UIClass.runAwayBtn.Text := "自动逃跑: 关"
+  StopMonitoring()
   AddLog("自动聚气已关闭")
 }
 
@@ -302,7 +351,7 @@ onClickRunAwayBtn(ctrl, *) {
     ctrl.Text := "自动逃跑: 开"
     UIClass.gatherEnergyBtn.Text := "自动聚气: 关"
     AddLog("自动逃跑已开启")
-    whetherFighting()
+    StartMonitoring()
     return
   }
 
@@ -310,88 +359,75 @@ onClickRunAwayBtn(ctrl, *) {
   RunningStatus.avoidWarState := 0
   ; 修改按键文字
   ctrl.Text := "自动逃跑: 关"
+  UIClass.gatherEnergyBtn.Text := "自动聚气: 关"
+  StopMonitoring()
   AddLog("自动逃跑已关闭")
 }
 
 ; 自动避战逻辑, 循环检查是否进战
-whetherFighting() {
+MonitorCombat() {
   ; 检查状态是否被关闭
   if RunningStatus.avoidWarState == 0 {
     return
   }
 
-  AddLog("正在检查是否进入战斗...")
-  if whetherEnterCombat() {
-    if RunningStatus.avoidWarState == 1 {
-      AddLog("进入战斗, 目前模式为: 自动聚气")
-      ; 自动聚气
-      collectEnergy()
-    } else if RunningStatus.avoidWarState == 2 {
-      AddLog("进入战斗, 目前模式为: 自动逃跑")
-      ; 自动逃跑
-      exitCombat()
-    }
-  }
-
-  ; 500ms检查一次是否进入了战斗
-  SetTimer(whetherFighting, -1000)
-}
-
-
-; 判断是否进入了战斗
-whetherEnterCombat() {
-  ; 颜色偏差值
-  deviationValue := 10
-  if !GetGameClientArea(&windowX, &windowY, &windowW, &windowH) {
-    return false
-  }
-
-  ; 查找游戏窗口左下小部分
-  ; x起始点和终点
-  startX := Round(windowX)
-  endX := Round(windowX + windowW * 0.15)
-  ; y起始点和终点
-  startY := Round(windowY + windowH * 0.8)
-  endY := Round(windowY + windowH)
-  ;400x170
-  ; 先进行粗略判断
-  if PixelSearch(&x, &y, startX, startY, endX, endY, EnergyColor, deviationValue) {
-    if PixelSearch(&_, &_, startX, startY, endX, endY, EnergyColorNearby_1, deviationValue)
-      && PixelSearch(&x_, &y_, startX, startY, endX, endY, EnergyColorNearby_2, deviationValue)
-      && PixelSearch(&_, &_, startX, startY, endX, endY, EnergyColorNearby_3, deviationValue)
-      && PixelSearch(&_, &_, startX, startY, endX, endY, EnergyColorNearby_4, deviationValue)
-      && PixelSearch(&_, &_, startX, startY, endX, endY, EnergyColorNearby_5, deviationValue) {
-      ; && PixelSearch(&a_, &b_, 0, 0, width * 0.15, height * 0.1, HealthBarColor, 5)
-      ; 左下角聚能色值验证 + 左上角血条色值验证
-      ; DrawBox(x_, y_)
-      ; DrawBox(a_, b_)
-
-      if getHealthBarColor(windowX, windowY, windowW, windowH) > 0 {
-        return true
-      }
-    }
-
-  }
-
-  return false
-}
-
-
-; 战斗中进行聚能
-collectEnergy() {
-  ; 颜色偏差值
-  deviationValue := 10
   if !GetGameClientArea(&windowX, &windowY, &windowW, &windowH) {
     return
   }
 
-  ; 查找游戏窗口左下小部分
-  ; x起始点和终点
-  startX := Round(windowX)
-  endX := Round(windowX + windowW * 0.15)
-  ; y起始点和终点
-  startY := Round(windowY + windowH * 0.8)
-  endY := Round(windowY + windowH)
+  if isItInNormalCondition(windowX, windowY, windowW, windowH) {
+    if RunningStatus.isInCombat {
+      RunningStatus.isInCombat := false
+      AddLog("战斗结束, 恢复检测")
+    } else {
+      AddLog("正在检查是否进入战斗...")
+    }
+    return
+  }
+
+  AddLog("正在检查是否进入战斗...")
+  if whetherEnterCombat(windowX, windowY, windowW, windowH) {
+    if !RunningStatus.isInCombat {
+      RunningStatus.isInCombat := true
+    }
+
+    if RunningStatus.avoidWarState == 1 {
+      AddLog("进入战斗, 目前模式为: 自动聚气")
+      collectEnergy(windowX, windowY, windowW, windowH)
+    } else if RunningStatus.avoidWarState == 2 {
+      AddLog("进入战斗, 目前模式为: 自动逃跑")
+      exitCombat(windowX, windowY, windowW, windowH)
+    }
+  }
+}
+
+
+; 判断是否进入了战斗
+whetherEnterCombat(windowX := "", windowY := "", windowW := "", windowH := "") {
+  if (windowX = "" || windowY = "" || windowW = "" || windowH = "") {
+    if !GetGameClientArea(&windowX, &windowY, &windowW, &windowH) {
+      return false
+    }
+  }
+
+  if getHealthBarColor(windowX, windowY, windowW, windowH) = 0 {
+    return false
+  }
+
+  return IsCombatActionVisible(windowX, windowY, windowW, windowH)
+}
+
+
+; 战斗中进行聚能
+collectEnergy(windowX := "", windowY := "", windowW := "", windowH := "") {
+  deviationValue := Config.combatColorTolerance
+  if (windowX = "" || windowY = "" || windowW = "" || windowH = "") {
+    if !GetGameClientArea(&windowX, &windowY, &windowW, &windowH) {
+      return
+    }
+  }
+
+  GetActionAreaBounds(windowX, windowY, windowW, windowH, &startX, &startY, &endX, &endY)
 
   ; 这里检查一下是否在换人界面, 如果在换人界面就说明精灵被打死了, 直接逃跑
   if PixelSearch(&_, &_, startX, startY, endX, endY, GreenLove_1, deviationValue)
@@ -410,52 +446,51 @@ collectEnergy() {
 
 
   ; 检查一下是否还存在聚气图标
-  if PixelSearch(&x, &y, startX, startY, endX, endY, EnergyColor, deviationValue) {
-    if PixelSearch(&_, &_, startX, startY, endX, endY, EnergyColorNearby_1, deviationValue)
-      && PixelSearch(&x_, &y_, startX, startY, endX, endY, EnergyColorNearby_2, deviationValue)
-      && PixelSearch(&_, &_, startX, startY, endX, endY, EnergyColorNearby_3, deviationValue)
-      && PixelSearch(&_, &_, startX, startY, endX, endY, EnergyColorNearby_4, deviationValue)
-      && PixelSearch(&_, &_, startX, startY, endX, endY, EnergyColorNearby_5, deviationValue) {
+  if IsCombatActionVisible(windowX, windowY, windowW, windowH, deviationValue)
+    && CanRunAction(RunningStatus.lastGatherTick, Config.gatherActionCooldownMs) {
 
-      ;还能聚气就一直聚气
-      AddLog("开始执行聚气动作")
-      if !GetGameClientArea(&windowX, &windowY, &windowW, &windowH, true) {
-        return
-      }
-      Sleep(500)
-      SendKey('x')
-      Sleep(3000)
-    }
-  }
-
-  ; 递归调用一下
-  SetTimer(collectEnergy, -2000)
-}
-
-
-; esc退出战斗
-exitCombat() {
-  if !GetGameClientArea(&windowX, &windowY, &windowW, &windowH) {
-    return
-  }
-
-  if !isItInNormalCondition(windowX, windowY, windowW, windowH) {
+    AddLog("开始执行聚气动作")
     if !GetGameClientArea(&windowX, &windowY, &windowW, &windowH, true) {
       return
     }
 
-    Sleep(500)
-    SendKey('Esc')
-    Sleep(1000)
+    Sleep(200)
+    SendKey('x')
+    RunningStatus.lastGatherTick := A_TickCount
+  }
+}
 
-    startX := Round(windowX + windowW * 0.5)
-    startY := Round(windowY + windowH * 0.7)
+
+; esc退出战斗
+exitCombat(windowX := "", windowY := "", windowW := "", windowH := "") {
+  if (windowX = "" || windowY = "" || windowW = "" || windowH = "") {
+    if !GetGameClientArea(&windowX, &windowY, &windowW, &windowH) {
+      return
+    }
+  }
+
+  if !isItInNormalCondition(windowX, windowY, windowW, windowH) {
+    if !CanRunAction(RunningStatus.lastRunawayTick, Config.runawayActionCooldownMs) {
+      return
+    }
+
+    if !GetGameClientArea(&windowX, &windowY, &windowW, &windowH, true) {
+      return
+    }
+
+    Sleep(200)
+    SendKey('Esc')
+    Sleep(400)
+
+    startX := Round(windowX + windowW * 0.45)
+    startY := Round(windowY + windowH * 0.6)
     endX := Round(windowX + windowW)
     endY := Round(windowY + windowH)
 
-    if PixelSearch(&x, &y, startX, startY, endX, endY, 0xf4eee1, 5) {
+    if PixelSearch(&x, &y, startX, startY, endX, endY, 0xf4eee1, Config.uiColorTolerance) {
       AddLog("开始执行逃跑操作")
       Click(x, y + 10)
+      RunningStatus.lastRunawayTick := A_TickCount
     }
   }
 }
@@ -474,11 +509,11 @@ getHealthBarColor(windowX := "", windowY := "", windowW := "", windowH := "") {
   ; y起始点和终点
   startY := Round(windowY)
   endY := Round(windowY + windowH * 0.1)
-  if PixelSearch(&x_, &y_, startX, startY, endX, endY, HealthBarColor1, 5) {
+  if PixelSearch(&x_, &y_, startX, startY, endX, endY, HealthBarColor1, Config.uiColorTolerance) {
     return 1
-  } else if PixelSearch(&x_, &y_, startX, startY, endX, endY, HealthBarColor2, 5) {
+  } else if PixelSearch(&x_, &y_, startX, startY, endX, endY, HealthBarColor2, Config.uiColorTolerance) {
     return 2
-  } else if PixelSearch(&x_, &y_, startX, startY, endX, endY, HealthBarColor3, 5) {
+  } else if PixelSearch(&x_, &y_, startX, startY, endX, endY, HealthBarColor3, Config.uiColorTolerance) {
     return 3
   }
 
@@ -498,9 +533,9 @@ isItInNormalCondition(windowX := "", windowY := "", windowW := "", windowH := ""
   endX := Round(windowX + windowW * 0.1)
   endY := Round(windowY + windowH * 0.1)
 
-  if PixelSearch(&_, &_, startX, startY, endX, endY, 0x64d1fd, 5)
-    && PixelSearch(&_, &_, startX, startY, endX, endY, 0xffc65f, 5)
-    && PixelSearch(&_, &_, startX, startY, endX, endY, 0x2469ba, 5) {
+  if PixelSearch(&_, &_, startX, startY, endX, endY, 0x64d1fd, Config.uiColorTolerance)
+    && PixelSearch(&_, &_, startX, startY, endX, endY, 0xffc65f, Config.uiColorTolerance)
+    && PixelSearch(&_, &_, startX, startY, endX, endY, 0x2469ba, Config.uiColorTolerance) {
     return true
   }
   return false
