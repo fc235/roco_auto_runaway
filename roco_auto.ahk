@@ -12,6 +12,7 @@ class Config {
   static targetMode := "窗口标题"
   static targetValue := "洛克王国：世界"
   static monitorIntervalMs := 250
+  static handHoldingCheckIntervalMs := 30000
   static gatherActionCooldownMs := 2200
   static runawayActionCooldownMs := 1500
   static combatColorTolerance := 16
@@ -19,6 +20,8 @@ class Config {
   static requiredActionNearbyMatches := 3
   static runawayFallbackXRatio := 0.78
   static runawayFallbackYRatio := 0.81
+  static handHoldingTextTolerance := 18
+  static requiredHandHoldingTextMatches := 2
 }
 
 
@@ -26,6 +29,7 @@ class Config {
 class RunningStatus {
   ; 是否启动自动聚气/逃跑 0: 关闭 1:自动聚气 2:自动逃跑
   static avoidWarState := 0
+  static autoHandHoldingEnabled := false
   static isInCombat := false
   static lastGatherTick := 0
   static lastRunawayTick := 0
@@ -39,6 +43,7 @@ class UIClass {
   static applyTargetBtn := ""
   static gatherEnergyBtn := ""
   static runAwayBtn := ""
+  static handHoldingBtn := ""
   static logBox := ""
 }
 
@@ -72,6 +77,11 @@ HealthBarColor3 := 0xaf3d3e
 RunawayButtonColor1 := 0xf4eee1
 RunawayButtonColor2 := 0xdbd4c5
 RunawayButtonColor3 := 0xc3c3b9
+
+; 牵手提示文字颜色
+HandHoldingTextColor1 := 0xdc9827
+HandHoldingTextColor2 := 0xe29816
+HandHoldingTextColor3 := 0xe39e24
 
 
 ; ================== GUI ==================
@@ -114,9 +124,12 @@ InitGui() {
   UIClass.runAwayBtn := ui.AddButton("xm y+20 w100 h30", "自动逃跑: 关")
   UIClass.runAwayBtn.OnEvent("Click", onClickRunAwayBtn)
 
+  UIClass.handHoldingBtn := ui.AddButton("xm y+20 w100 h30", "自动牵手: 关")
+  UIClass.handHoldingBtn.OnEvent("Click", onClickHandHoldingBtn)
+
   ; GuiCtrl := ui.AddStatusBar("h30", "运行中...")
 
-  UIClass.logBox := ui.AddEdit("ym x+15 w160 h130 ReadOnly -Border -VScroll -HScroll +Disabled")
+  UIClass.logBox := ui.AddEdit("ym x+15 w160 h180 ReadOnly -Border -VScroll -HScroll +Disabled")
   UIClass.logBox.SetFont("s9 c000000", "Consolas")
 
 
@@ -131,7 +144,7 @@ InitGui() {
 
 
   UIClass.ui := ui
-  ui.Show("w360 h165 NOACTIVATE")
+  ui.Show("w360 h215 NOACTIVATE")
 }
 
 
@@ -231,13 +244,13 @@ GetGameHwnd() {
   return matcher != "" ? WinExist(matcher) : 0
 }
 
-ActivateWindowById(hwnd) {
+ActivateWindowById(hwnd, restoreMinimized := true) {
   WinShow("ahk_id " hwnd)
   try windowState := WinGetMinMax("ahk_id " hwnd)
   catch
     windowState := 0
 
-  if (windowState = -1) {
+  if restoreMinimized && (windowState = -1) {
     WinRestore("ahk_id " hwnd)
   }
 
@@ -284,6 +297,33 @@ ActivateWindowById(hwnd) {
   return WinActive(targetWin)
 }
 
+CaptureForegroundWindow(excludeHwnd := 0) {
+  hwnd := WinExist("A")
+  if !hwnd {
+    return 0
+  }
+
+  if excludeHwnd && (hwnd = excludeHwnd) {
+    return 0
+  }
+
+  return hwnd
+}
+
+RestoreForegroundWindow(hwnd) {
+  if !hwnd || !WinExist("ahk_id " hwnd) {
+    return false
+  }
+
+  if WinActive("ahk_id " hwnd) {
+    return true
+  }
+
+  WinActivate("ahk_id " hwnd)
+  DllCall("SetForegroundWindow", "Ptr", hwnd)
+  return WinWaitActive("ahk_id " hwnd, , 0.5)
+}
+
 GetGameClientArea(&x, &y, &width, &height, activate := false) {
   hwnd := GetGameHwnd()
   if !hwnd {
@@ -326,6 +366,14 @@ StopMonitoring() {
   ResetCombatState()
 }
 
+StartHandHoldingMonitoring() {
+  SetTimer(CheckAutoHandHolding, Config.handHoldingCheckIntervalMs)
+}
+
+StopHandHoldingMonitoring() {
+  SetTimer(CheckAutoHandHolding, 0)
+}
+
 GetActionAreaBounds(windowX, windowY, windowW, windowH, &startX, &startY, &endX, &endY) {
   startX := Round(windowX)
   endX := Round(windowX + windowW * 0.18)
@@ -364,6 +412,13 @@ GetRunawayFocusBounds(windowX, windowY, windowW, windowH, &startX, &startY, &end
 GetRunawayFallbackPoint(windowX, windowY, windowW, windowH, &x, &y) {
   x := Round(windowX + windowW * Config.runawayFallbackXRatio)
   y := Round(windowY + windowH * Config.runawayFallbackYRatio)
+}
+
+GetHandHoldingBounds(windowX, windowY, windowW, windowH, &startX, &startY, &endX, &endY) {
+  startX := Round(windowX + windowW * 0.58)
+  startY := Round(windowY + windowH * 0.49)
+  endX := Round(windowX + windowW * 0.70)
+  endY := Round(windowY + windowH * 0.56)
 }
 
 FindColorPoint(startX, startY, endX, endY, colorValue, tolerance) {
@@ -481,6 +536,73 @@ onClickRunAwayBtn(ctrl, *) {
   AddLog("自动逃跑已关闭")
 }
 
+onClickHandHoldingBtn(ctrl, *) {
+  RunningStatus.autoHandHoldingEnabled := !RunningStatus.autoHandHoldingEnabled
+  ctrl.Text := RunningStatus.autoHandHoldingEnabled ? "自动牵手: 开" : "自动牵手: 关"
+
+  if RunningStatus.autoHandHoldingEnabled {
+    AddLog("自动牵手已开启")
+    StartHandHoldingMonitoring()
+    CheckAutoHandHolding()
+  } else {
+    StopHandHoldingMonitoring()
+    AddLog("自动牵手已关闭")
+  }
+}
+
+IsHandHoldingDialogVisible(windowX, windowY, windowW, windowH) {
+  GetHandHoldingBounds(windowX, windowY, windowW, windowH, &startX, &startY, &endX, &endY)
+  matches := 0
+  handHoldingColors := [HandHoldingTextColor1, HandHoldingTextColor2, HandHoldingTextColor3]
+
+  for color in handHoldingColors {
+    if PixelSearch(&_, &_, startX, startY, endX, endY, color, Config.handHoldingTextTolerance) {
+      matches += 1
+    }
+  }
+
+  return matches >= Config.requiredHandHoldingTextMatches
+}
+
+CheckAutoHandHolding() {
+  if !RunningStatus.autoHandHoldingEnabled {
+    return
+  }
+
+  hwnd := GetGameHwnd()
+  if !hwnd {
+    return
+  }
+
+  if !GetGameClientArea(&windowX, &windowY, &windowW, &windowH) {
+    AddLog("牵手检测结果: 未找到游戏窗口区域")
+    return
+  }
+
+  if !isItInNormalCondition(windowX, windowY, windowW, windowH) {
+    AddLog("牵手检测结果: 当前不在大世界")
+    return
+  }
+
+  if !IsHandHoldingDialogVisible(windowX, windowY, windowW, windowH) {
+    AddLog("牵手检测结果: 未识别到牵手文字")
+    return
+  }
+
+  AddLog("牵手检测结果: 已识别到牵手文字, 准备按F")
+  previousHwnd := CaptureForegroundWindow(hwnd)
+  if !GetGameClientArea(&windowX, &windowY, &windowW, &windowH, true) {
+    AddLog("牵手检测结果: 激活游戏窗口失败")
+    return
+  }
+
+  Sleep(150)
+  SendKey("f")
+  Sleep(100)
+  RestoreForegroundWindow(previousHwnd)
+  AddLog("牵手检测结果: 已发送F")
+}
+
 ; 自动避战逻辑, 循环检查是否进战
 MonitorCombat() {
   ; 检查状态是否被关闭
@@ -567,12 +689,15 @@ collectEnergy(windowX := "", windowY := "", windowW := "", windowH := "") {
     && CanRunAction(RunningStatus.lastGatherTick, Config.gatherActionCooldownMs) {
 
     AddLog("开始执行聚气动作")
+    previousHwnd := CaptureForegroundWindow(GetGameHwnd())
     if !GetGameClientArea(&windowX, &windowY, &windowW, &windowH, true) {
       return
     }
 
     Sleep(200)
     SendKey('x')
+    Sleep(100)
+    RestoreForegroundWindow(previousHwnd)
     RunningStatus.lastGatherTick := A_TickCount
   }
 }
@@ -591,6 +716,7 @@ exitCombat(windowX := "", windowY := "", windowW := "", windowH := "") {
       return
     }
 
+    previousHwnd := CaptureForegroundWindow(GetGameHwnd())
     if !GetGameClientArea(&windowX, &windowY, &windowW, &windowH, true) {
       return
     }
@@ -607,6 +733,8 @@ exitCombat(windowX := "", windowY := "", windowW := "", windowH := "") {
     }
 
     Click(clickX, clickY)
+    Sleep(120)
+    RestoreForegroundWindow(previousHwnd)
     RunningStatus.lastRunawayTick := A_TickCount
   }
 }
@@ -663,6 +791,7 @@ SendKey(str, time := 50) {
   Send("{" str " down}")
   Sleep(time)
   Send("{" str " up}")
+  return true
 }
 
 
@@ -674,6 +803,7 @@ AddLog(msg) {
 
   ; 当前日志带时间
   newLine := FormatTime(, "HH:mm:ss") " " msg
+  isHandHoldingResult := InStr(msg, "牵手检测结果:") ? true : false
 
   if (AddLog.lines.Length > 0) {
     last := AddLog.lines[AddLog.lines.Length]
@@ -681,7 +811,7 @@ AddLog(msg) {
     if (last = newLine) {
       return
     }
-    else if (InStr(last, msg)) {
+    else if (!isHandHoldingResult && InStr(last, msg)) {
       AddLog.lines[AddLog.lines.Length] := newLine
     }
     else {
@@ -692,8 +822,8 @@ AddLog(msg) {
     AddLog.lines.Push(newLine)
   }
 
-  ; === 限制5行 ===
-  if (AddLog.lines.Length > 5)
+  ; === 限制12行 ===
+  if (AddLog.lines.Length > 12)
     AddLog.lines.RemoveAt(1)
 
   ; === 重绘 ===
