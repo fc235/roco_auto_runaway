@@ -12,6 +12,7 @@ class Config {
   static targetMode := "窗口标题"
   static targetValue := "洛克王国：世界"
   static monitorIntervalMs := 250
+  static combatConfirmHitsRequired := 2
   static handHoldingCheckIntervalMs := 30000
   static gatherActionCooldownMs := 2200
   static runawayActionCooldownMs := 1500
@@ -30,7 +31,10 @@ class RunningStatus {
   ; 是否启动自动聚气/逃跑 0: 关闭 1:自动聚气 2:自动逃跑
   static avoidWarState := 0
   static autoHandHoldingEnabled := false
+  static uiEditMode := false
+  static previousUiFocusHwnd := 0
   static isInCombat := false
+  static combatConfirmHits := 0
   static lastGatherTick := 0
   static lastRunawayTick := 0
 }
@@ -38,6 +42,7 @@ class RunningStatus {
 ; ui实例类
 class UIClass {
   static ui := ""
+  static editModeBtn := ""
   static targetModeDDL := ""
   static targetValueEdit := ""
   static applyTargetBtn := ""
@@ -97,18 +102,21 @@ InitGui() {
   ui.BackColor := "F6F0E5"
 
 
-  ; --- 不抢焦点 ---
+  ; 默认不抢焦点，进入“修改”模式时再临时允许激活
   hwnd := ui.Hwnd
-  exStyle := DllCall("GetWindowLongPtr", "Ptr", hwnd, "Int", -20, "Ptr")
-  DllCall("SetWindowLongPtr", "Ptr", hwnd, "Int", -20, "Ptr", exStyle | 0x08000000)
-
+  ApplyGuiNoActivate(hwnd, true)
   OnMessage(0x21, WM_MOUSEACTIVATE)
-  WM_MOUSEACTIVATE(*) {
-    return 3  ; MA_NOACTIVATE
+  WM_MOUSEACTIVATE(wParam, lParam, msg, currentHwnd) {
+    if (currentHwnd != hwnd) {
+      return
+    }
+    return RunningStatus.uiEditMode ? 1 : 3
   }
 
   ui.SetFont("s12 c5A4633", "Microsoft YaHei UI")
   ui.AddText("x20 y16", "洛克王国 自动避战")
+  UIClass.editModeBtn := ui.AddButton("x402 y14 w48 h24", "修改")
+  UIClass.editModeBtn.OnEvent("Click", onClickEditModeBtn)
   ui.SetFont("s8 c7B6B58", "Microsoft YaHei UI")
   ui.AddText("x20 y40 w200", "窗口化副屏使用更稳定")
 
@@ -194,6 +202,34 @@ ElevatePrivileges() {
   }
 }
 
+ApplyGuiNoActivate(hwnd, enabled) {
+  exStyle := DllCall("GetWindowLongPtr", "Ptr", hwnd, "Int", -20, "Ptr")
+  newStyle := enabled ? (exStyle | 0x08000000) : (exStyle & ~0x08000000)
+  DllCall("SetWindowLongPtr", "Ptr", hwnd, "Int", -20, "Ptr", newStyle)
+}
+
+SetUiEditMode(enabled) {
+  hwnd := UIClass.ui.Hwnd
+  if !hwnd {
+    return
+  }
+
+  RunningStatus.uiEditMode := enabled
+  ApplyGuiNoActivate(hwnd, !enabled)
+
+  if enabled {
+    RunningStatus.previousUiFocusHwnd := CaptureForegroundWindow(hwnd)
+    UIClass.editModeBtn.Text := "完成"
+    WinActivate("ahk_id " hwnd)
+    try UIClass.handHoldingIntervalEdit.Focus()
+  } else {
+    UIClass.editModeBtn.Text := "修改"
+    UIClass.ui.Show("NOACTIVATE")
+    RestoreForegroundWindow(RunningStatus.previousUiFocusHwnd)
+    RunningStatus.previousUiFocusHwnd := 0
+  }
+}
+
 
 DrawAccurate(x, y, size := 20) {
   g1 := Gui("+AlwaysOnTop -Caption +ToolWindow")
@@ -211,6 +247,10 @@ DrawAccurate(x, y, size := 20) {
 SendOnce(*) {
 }
 
+onClickEditModeBtn(*) {
+  SetUiEditMode(!RunningStatus.uiEditMode)
+  AddLog(RunningStatus.uiEditMode ? "已进入配置修改模式" : "已退出配置修改模式")
+}
 
 onClickApplyTargetBtn(*) {
   mode := UIClass.targetModeDDL.Text
@@ -228,6 +268,10 @@ onClickApplyTargetBtn(*) {
     AddLog("目标已应用: " mode " / " value)
   } else {
     AddLog("目标已保存, 当前未找到窗口")
+  }
+
+  if RunningStatus.uiEditMode {
+    SetUiEditMode(false)
   }
 }
 
@@ -369,6 +413,7 @@ GetGameClientArea(&x, &y, &width, &height, activate := false) {
 
 ResetCombatState() {
   RunningStatus.isInCombat := false
+  RunningStatus.combatConfirmHits := 0
   RunningStatus.lastGatherTick := 0
   RunningStatus.lastRunawayTick := 0
 }
@@ -614,6 +659,10 @@ onClickApplyHandHoldingIntervalBtn(*) {
 
   UIClass.handHoldingIntervalEdit.Value := seconds
   AddLog("牵手间隔已设置为 " seconds " 秒")
+
+  if RunningStatus.uiEditMode {
+    SetUiEditMode(false)
+  }
 }
 
 IsHandHoldingDialogVisible(windowX, windowY, windowW, windowH) {
@@ -682,6 +731,7 @@ MonitorCombat() {
   }
 
   if isItInNormalCondition(windowX, windowY, windowW, windowH) {
+    RunningStatus.combatConfirmHits := 0
     if RunningStatus.isInCombat {
       RunningStatus.isInCombat := false
       AddLog("战斗结束, 恢复检测")
@@ -693,6 +743,12 @@ MonitorCombat() {
 
   AddLog("正在检查是否进入战斗...")
   if whetherEnterCombat(windowX, windowY, windowW, windowH) {
+    RunningStatus.combatConfirmHits := Min(RunningStatus.combatConfirmHits + 1, Config.combatConfirmHitsRequired)
+    if (RunningStatus.combatConfirmHits < Config.combatConfirmHitsRequired) {
+      AddLog("疑似进入战斗, 正在二次确认...")
+      return
+    }
+
     if !RunningStatus.isInCombat {
       RunningStatus.isInCombat := true
     }
@@ -704,6 +760,8 @@ MonitorCombat() {
       AddLog("进入战斗, 目前模式为: 自动逃跑")
       exitCombat(windowX, windowY, windowW, windowH)
     }
+  } else {
+    RunningStatus.combatConfirmHits := 0
   }
 }
 
