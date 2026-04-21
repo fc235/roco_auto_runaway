@@ -44,6 +44,8 @@ class UIClass {
   static gatherEnergyBtn := ""
   static runAwayBtn := ""
   static handHoldingBtn := ""
+  static handHoldingIntervalEdit := ""
+  static applyHandHoldingIntervalBtn := ""
   static logBox := ""
 }
 
@@ -92,6 +94,7 @@ InitGui() {
 
   ui := Gui("-Resize -MaximizeBox -MinimizeBox +AlwaysOnTop")
   ui.Title := "洛克王国  自动避战"
+  ui.BackColor := "F6F0E5"
 
 
   ; --- 不抢焦点 ---
@@ -104,33 +107,46 @@ InitGui() {
     return 3  ; MA_NOACTIVATE
   }
 
-  ui.AddText("xm y+15", "目标窗口")
+  ui.SetFont("s12 c5A4633", "Microsoft YaHei UI")
+  ui.AddText("x20 y16", "洛克王国 自动避战")
+  ui.SetFont("s8 c7B6B58", "Microsoft YaHei UI")
+  ui.AddText("x20 y40 w200", "窗口化副屏使用更稳定")
 
-  UIClass.targetModeDDL := ui.AddDropDownList("x+10 yp-3 w80", ["窗口标题", "进程名"])
+  ui.SetFont("s9 c4A3F31", "Microsoft YaHei UI")
+  ui.AddGroupBox("x16 y66 w208 h176", "窗口与功能")
+  ui.AddText("x30 y92 w60", "目标窗口")
+
+  UIClass.targetModeDDL := ui.AddDropDownList("x94 y88 w78", ["窗口标题", "进程名"])
   if (Config.targetMode = "进程名") {
     UIClass.targetModeDDL.Choose(2)
   } else {
     UIClass.targetModeDDL.Choose(1)
   }
 
-  UIClass.targetValueEdit := ui.AddEdit("x+8 yp w110", Config.targetValue)
-  UIClass.applyTargetBtn := ui.AddButton("x+8 yp-1 w50 h23", "应用")
+  UIClass.targetValueEdit := ui.AddEdit("x30 y120 w138 h24", Config.targetValue)
+  UIClass.applyTargetBtn := ui.AddButton("x174 y119 w34 h25", "应用")
   UIClass.applyTargetBtn.OnEvent("Click", onClickApplyTargetBtn)
 
-  ; --- 按钮 ---
-  UIClass.gatherEnergyBtn := ui.AddButton("xm y+18 w100 h30", "自动聚气: 关")
+  UIClass.gatherEnergyBtn := ui.AddButton("x30 y156 w178 h28", "自动聚气: 关")
   UIClass.gatherEnergyBtn.OnEvent("Click", onClickGatherEnergyBtn)
 
-  UIClass.runAwayBtn := ui.AddButton("xm y+20 w100 h30", "自动逃跑: 关")
+  UIClass.runAwayBtn := ui.AddButton("x30 y190 w178 h28", "自动逃跑: 关")
   UIClass.runAwayBtn.OnEvent("Click", onClickRunAwayBtn)
 
-  UIClass.handHoldingBtn := ui.AddButton("xm y+20 w100 h30", "自动牵手: 关")
+  UIClass.handHoldingBtn := ui.AddButton("x30 y224 w178 h28", "自动牵手: 关")
   UIClass.handHoldingBtn.OnEvent("Click", onClickHandHoldingBtn)
 
-  ; GuiCtrl := ui.AddStatusBar("h30", "运行中...")
+  ui.AddGroupBox("x16 y252 w208 h72", "牵手设置")
+  ui.AddText("x30 y280 w84", "检测间隔(秒)")
+  UIClass.handHoldingIntervalEdit := ui.AddEdit("x118 y276 w50 h24 Center", Round(Config.handHoldingCheckIntervalMs / 1000))
+  UIClass.applyHandHoldingIntervalBtn := ui.AddButton("x174 y275 w34 h25", "应用")
+  UIClass.applyHandHoldingIntervalBtn.OnEvent("Click", onClickApplyHandHoldingIntervalBtn)
 
-  UIClass.logBox := ui.AddEdit("ym x+15 w160 h180 ReadOnly -Border -VScroll -HScroll +Disabled")
-  UIClass.logBox.SetFont("s9 c000000", "Consolas")
+  ui.AddGroupBox("x236 y16 w228 h308", "运行日志")
+  ui.SetFont("s8 c7B6B58", "Microsoft YaHei UI")
+  ui.AddText("x252 y40 w196", "显示最近状态，便于观察识别结果")
+  UIClass.logBox := ui.AddEdit("x252 y64 w196 h242 ReadOnly -Border -VScroll -HScroll +Disabled")
+  UIClass.logBox.SetFont("s9 c2F2A23", "Consolas")
 
 
   ; testBtn := ui.AddButton("xm y+20 w100 h30", "测试按钮")
@@ -144,7 +160,7 @@ InitGui() {
 
 
   UIClass.ui := ui
-  ui.Show("w360 h215 NOACTIVATE")
+  ui.Show("w480 h340 NOACTIVATE")
 }
 
 
@@ -152,6 +168,7 @@ InitGui() {
 Main() {
   ElevatePrivileges()
   InitGui()
+  RefreshActionButtons()
   AddLog("开始运行...")
 }
 Main()
@@ -374,6 +391,36 @@ StopHandHoldingMonitoring() {
   SetTimer(CheckAutoHandHolding, 0)
 }
 
+ApplyHandHoldingInterval(seconds) {
+  seconds := Floor(seconds + 0)
+  if (seconds < 1) {
+    return false
+  }
+
+  Config.handHoldingCheckIntervalMs := seconds * 1000
+  if RunningStatus.autoHandHoldingEnabled {
+    StopHandHoldingMonitoring()
+    StartHandHoldingMonitoring()
+  }
+
+  return true
+}
+
+SetActionButtonState(ctrl, label, isActive) {
+  if !ctrl {
+    return
+  }
+
+  ctrl.Text := label ": " (isActive ? "开" : "关")
+  ctrl.Opt(isActive ? "+BackgroundD4E7C5 c2F4A21" : "+BackgroundF1E2CF c4A3F31")
+}
+
+RefreshActionButtons() {
+  SetActionButtonState(UIClass.gatherEnergyBtn, "自动聚气", RunningStatus.avoidWarState = 1)
+  SetActionButtonState(UIClass.runAwayBtn, "自动逃跑", RunningStatus.avoidWarState = 2)
+  SetActionButtonState(UIClass.handHoldingBtn, "自动牵手", RunningStatus.autoHandHoldingEnabled)
+}
+
 GetActionAreaBounds(windowX, windowY, windowW, windowH, &startX, &startY, &endX, &endY) {
   startX := Round(windowX)
   endX := Round(windowX + windowW * 0.18)
@@ -497,9 +544,7 @@ onClickGatherEnergyBtn(ctrl, *) {
   if RunningStatus.avoidWarState != 1 {
     ; 修改一下状态
     RunningStatus.avoidWarState := 1
-    ; 修改按键文字
-    ctrl.Text := "自动聚气: 开"
-    UIClass.runAwayBtn.Text := "自动逃跑: 关"
+    RefreshActionButtons()
     AddLog("自动聚气已开启")
     StartMonitoring()
     return
@@ -507,9 +552,7 @@ onClickGatherEnergyBtn(ctrl, *) {
 
   ; 修改一下状态
   RunningStatus.avoidWarState := 0
-  ; 修改按键文字
-  ctrl.Text := "自动聚气: 关"
-  UIClass.runAwayBtn.Text := "自动逃跑: 关"
+  RefreshActionButtons()
   StopMonitoring()
   AddLog("自动聚气已关闭")
 }
@@ -519,9 +562,7 @@ onClickRunAwayBtn(ctrl, *) {
   if RunningStatus.avoidWarState != 2 {
     ; 修改一下状态
     RunningStatus.avoidWarState := 2
-    ; 修改按键文字
-    ctrl.Text := "自动逃跑: 开"
-    UIClass.gatherEnergyBtn.Text := "自动聚气: 关"
+    RefreshActionButtons()
     AddLog("自动逃跑已开启")
     StartMonitoring()
     return
@@ -529,16 +570,14 @@ onClickRunAwayBtn(ctrl, *) {
 
   ; 修改一下状态
   RunningStatus.avoidWarState := 0
-  ; 修改按键文字
-  ctrl.Text := "自动逃跑: 关"
-  UIClass.gatherEnergyBtn.Text := "自动聚气: 关"
+  RefreshActionButtons()
   StopMonitoring()
   AddLog("自动逃跑已关闭")
 }
 
 onClickHandHoldingBtn(ctrl, *) {
   RunningStatus.autoHandHoldingEnabled := !RunningStatus.autoHandHoldingEnabled
-  ctrl.Text := RunningStatus.autoHandHoldingEnabled ? "自动牵手: 开" : "自动牵手: 关"
+  RefreshActionButtons()
 
   if RunningStatus.autoHandHoldingEnabled {
     AddLog("自动牵手已开启")
@@ -548,6 +587,33 @@ onClickHandHoldingBtn(ctrl, *) {
     StopHandHoldingMonitoring()
     AddLog("自动牵手已关闭")
   }
+}
+
+onClickApplyHandHoldingIntervalBtn(*) {
+  rawValue := Trim(UIClass.handHoldingIntervalEdit.Value)
+  if rawValue = "" {
+    AddLog("请输入牵手间隔秒数")
+    return
+  }
+
+  if !RegExMatch(rawValue, "^\d+$") {
+    AddLog("牵手间隔需为正整数秒")
+    return
+  }
+
+  seconds := Floor(rawValue + 0)
+  if (seconds < 1) {
+    AddLog("牵手间隔至少为1秒")
+    return
+  }
+
+  if !ApplyHandHoldingInterval(seconds) {
+    AddLog("牵手间隔应用失败")
+    return
+  }
+
+  UIClass.handHoldingIntervalEdit.Value := seconds
+  AddLog("牵手间隔已设置为 " seconds " 秒")
 }
 
 IsHandHoldingDialogVisible(windowX, windowY, windowW, windowH) {
@@ -571,6 +637,7 @@ CheckAutoHandHolding() {
 
   hwnd := GetGameHwnd()
   if !hwnd {
+    AddLog("牵手检测结果: 未找到目标窗口")
     return
   }
 
