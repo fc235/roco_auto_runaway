@@ -185,6 +185,7 @@ Main() {
   InitGui()
   RefreshActionButtons()
   AddLog("开始运行... 当前版本 " Config.appVersion)
+  SetTimer(CheckForUpdatesOnStartup, -600)
 }
 Main()
 
@@ -289,6 +290,30 @@ CheckForUpdates(showLatestWhenCurrent := true) {
   }
 }
 
+CheckForUpdatesOnStartup() {
+  try {
+    latestVersion := GetLatestReleaseVersion()
+  } catch as err {
+    AddLog("更新检查失败: " err.Message)
+    return
+  }
+
+  compareResult := CompareVersions(Config.appVersion, latestVersion)
+  if (compareResult < 0) {
+    result := MsgBox(
+      "检测到新版本：`n当前版本: " Config.appVersion "`n最新版本: " latestVersion "`n`n是否打开 Release 页面？",
+      "发现新版本",
+      "YesNo Iconi"
+    )
+    if (result = "Yes") {
+      Run(Config.latestReleaseUrl)
+    }
+    return
+  }
+
+  AddLog("更新检查：当前已是最新版本 " latestVersion)
+}
+
 ShowAboutDialog() {
   if UIClass.aboutUi {
     try {
@@ -305,24 +330,23 @@ ShowAboutDialog() {
   aboutUi.SetFont("s9", "Microsoft YaHei UI")
   aboutUi.AddText("x16 y44 w260", "当前版本: " Config.appVersion)
   aboutUi.AddText("x16 y70 w300", "GitHub 开源地址")
-  repoEdit := aboutUi.AddEdit("x16 y92 w320 h42 ReadOnly -WantReturn", Config.projectUrl)
-  repoEdit.SetFont("s9", "Consolas")
+  aboutUi.SetFont("s9 c0000FF Underline", "Segoe UI")
+  projectLink := aboutUi.AddText("x16 y92 w320 h22 +0x100", Config.projectUrl)
+  projectLink.OnEvent("Click", (*) => Run(Config.projectUrl))
+  aboutUi.SetFont("s9", "Microsoft YaHei UI")
 
-  openGitHubBtn := aboutUi.AddButton("x16 y148 w94 h28", "打开 GitHub")
-  openGitHubBtn.OnEvent("Click", (*) => Run(Config.projectUrl))
-
-  checkUpdateBtn := aboutUi.AddButton("x122 y148 w94 h28", "检查更新")
+  checkUpdateBtn := aboutUi.AddButton("x48 y136 w112 h28", "检查更新")
   checkUpdateBtn.OnEvent("Click", (*) => CheckForUpdates())
 
-  openReleaseBtn := aboutUi.AddButton("x228 y148 w108 h28", "打开 Release")
+  openReleaseBtn := aboutUi.AddButton("x188 y136 w112 h28", "打开 Release")
   openReleaseBtn.OnEvent("Click", (*) => Run(Config.latestReleaseUrl))
 
-  closeBtn := aboutUi.AddButton("x122 y184 w108 h28", "关闭")
+  closeBtn := aboutUi.AddButton("x122 y176 w108 h28", "关闭")
   closeBtn.OnEvent("Click", (*) => aboutUi.Hide())
 
   aboutUi.OnEvent("Close", (*) => aboutUi.Hide())
   UIClass.aboutUi := aboutUi
-  aboutUi.Show("w352 h228")
+  aboutUi.Show("w352 h220")
 }
 
 ApplyGuiNoActivate(hwnd, enabled) {
