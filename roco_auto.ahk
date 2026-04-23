@@ -7,7 +7,7 @@ CoordMode "Mouse", "Screen"
 
 
 class Config {
-  static appVersion := "v1.4"
+  static appVersion := "v1.5"
   static projectUrl := "https://github.com/fc235/roco_auto_runaway"
   static latestReleaseUrl := "https://github.com/fc235/roco_auto_runaway/releases/latest"
   static defaultGameWindowTitle := "洛克王国：世界"
@@ -36,6 +36,8 @@ class RunningStatus {
   static autoHandHoldingEnabled := false
   static uiEditMode := false
   static previousUiFocusHwnd := 0
+  static updateCheckExec := 0
+  static updateCheckMode := ""
   static isInCombat := false
   static combatConfirmHits := 0
   static lastGatherTick := 0
@@ -185,7 +187,7 @@ Main() {
   InitGui()
   RefreshActionButtons()
   AddLog("开始运行... 当前版本 " Config.appVersion)
-  SetTimer(CheckForUpdatesOnStartup, -600)
+  SetTimer(StartStartupUpdateCheck, -600)
 }
 Main()
 
@@ -237,34 +239,20 @@ CompareVersions(leftVersion, rightVersion) {
   return 0
 }
 
-GetLatestReleaseVersion() {
-  request := ComObject("WinHttp.WinHttpRequest.5.1")
-  request.Option[6] := false
-  request.Open("GET", Config.latestReleaseUrl, false)
-  request.SetRequestHeader("User-Agent", "roco_auto")
-  request.Send()
-
-  if (request.Status < 300 || request.Status >= 400) {
-    throw Error("请求失败，状态码: " request.Status)
-  }
-
-  location := request.GetResponseHeader("Location")
-  if !location {
-    throw Error("未获取到最新版本跳转地址")
-  }
-
-  if RegExMatch(location, "/tag/([^/?#]+)", &match) {
+ExtractReleaseVersionFromUrl(url) {
+  if RegExMatch(url, "/tag/([^/?#]+)", &match) {
     return match[1]
   }
-
-  throw Error("无法解析最新版本号")
+  return ""
 }
 
-CheckForUpdates(showLatestWhenCurrent := true) {
-  try {
-    latestVersion := GetLatestReleaseVersion()
-  } catch as err {
-    MsgBox("检查更新失败：`n" err.Message, "检查更新", "Iconx")
+HandleUpdateCheckResult(mode, latestVersion, errorMessage := "") {
+  if errorMessage != "" {
+    if (mode = "startup") {
+      AddLog("更新检查失败: " errorMessage)
+    } else {
+      MsgBox("检查更新失败：`n" errorMessage, "检查更新", "Iconx")
+    }
     return
   }
 
@@ -272,7 +260,7 @@ CheckForUpdates(showLatestWhenCurrent := true) {
   if (compareResult < 0) {
     result := MsgBox(
       "检测到新版本：`n当前版本: " Config.appVersion "`n最新版本: " latestVersion "`n`n是否打开 Release 页面？",
-      "检查更新",
+      mode = "startup" ? "发现新版本" : "检查更新",
       "YesNo Iconi"
     )
     if (result = "Yes") {
@@ -281,7 +269,9 @@ CheckForUpdates(showLatestWhenCurrent := true) {
     return
   }
 
-  if showLatestWhenCurrent {
+  if (mode = "startup") {
+    AddLog("更新检查：当前已是最新版本 " latestVersion)
+  } else {
     MsgBox(
       "当前已是最新版本。`n当前版本: " Config.appVersion "`n最新版本: " latestVersion,
       "检查更新",
@@ -290,28 +280,59 @@ CheckForUpdates(showLatestWhenCurrent := true) {
   }
 }
 
-CheckForUpdatesOnStartup() {
-  try {
-    latestVersion := GetLatestReleaseVersion()
-  } catch as err {
-    AddLog("更新检查失败: " err.Message)
-    return
-  }
-
-  compareResult := CompareVersions(Config.appVersion, latestVersion)
-  if (compareResult < 0) {
-    result := MsgBox(
-      "检测到新版本：`n当前版本: " Config.appVersion "`n最新版本: " latestVersion "`n`n是否打开 Release 页面？",
-      "发现新版本",
-      "YesNo Iconi"
-    )
-    if (result = "Yes") {
-      Run(Config.latestReleaseUrl)
+StartAsyncUpdateCheck(mode) {
+  if RunningStatus.updateCheckExec {
+    if (mode != "startup") {
+      MsgBox("更新检查正在进行中，请稍后再试。", "检查更新", "Iconi")
     }
     return
   }
 
-  AddLog("更新检查：当前已是最新版本 " latestVersion)
+  command := 'curl.exe -L -s -o NUL -w "%{url_effective}" "' Config.latestReleaseUrl '"'
+  try {
+    RunningStatus.updateCheckExec := ComObject("WScript.Shell").Exec(command)
+  } catch as err {
+    HandleUpdateCheckResult(mode, "", err.Message)
+    return
+  }
+
+  RunningStatus.updateCheckMode := mode
+  SetTimer(PollAsyncUpdateCheck, 200)
+}
+
+PollAsyncUpdateCheck() {
+  exec := RunningStatus.updateCheckExec
+  if !exec {
+    SetTimer(PollAsyncUpdateCheck, 0)
+    return
+  }
+
+  if (exec.Status = 0) {
+    return
+  }
+
+  SetTimer(PollAsyncUpdateCheck, 0)
+  stdout := Trim(exec.StdOut.ReadAll())
+  stderr := Trim(exec.StdErr.ReadAll())
+  mode := RunningStatus.updateCheckMode
+  RunningStatus.updateCheckExec := 0
+  RunningStatus.updateCheckMode := ""
+
+  latestVersion := ExtractReleaseVersionFromUrl(stdout)
+  if (latestVersion = "") {
+    HandleUpdateCheckResult(mode, "", stderr != "" ? stderr : "无法解析最新版本号")
+    return
+  }
+
+  HandleUpdateCheckResult(mode, latestVersion)
+}
+
+StartStartupUpdateCheck() {
+  StartAsyncUpdateCheck("startup")
+}
+
+CheckForUpdates() {
+  StartAsyncUpdateCheck("manual")
 }
 
 ShowAboutDialog() {
