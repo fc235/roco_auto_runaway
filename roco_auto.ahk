@@ -7,6 +7,9 @@ CoordMode "Mouse", "Screen"
 
 
 class Config {
+  static appVersion := "v1.4"
+  static projectUrl := "https://github.com/fc235/roco_auto_runaway"
+  static latestReleaseUrl := "https://github.com/fc235/roco_auto_runaway/releases/latest"
   static defaultGameWindowTitle := "洛克王国：世界"
   static defaultGameProcess := "NRC-Win64-Shipping.exe"
   static targetMode := "窗口标题"
@@ -43,6 +46,8 @@ class RunningStatus {
 class UIClass {
   static ui := ""
   static editModeBtn := ""
+  static aboutBtn := ""
+  static aboutUi := ""
   static targetModeDDL := ""
   static targetValueEdit := ""
   static applyTargetBtn := ""
@@ -115,6 +120,8 @@ InitGui() {
 
   ui.SetFont("s12 c5A4633", "Microsoft YaHei UI")
   ui.AddText("x20 y16", "洛克王国 自动避战")
+  UIClass.aboutBtn := ui.AddButton("x354 y14 w42 h24", "关于")
+  UIClass.aboutBtn.OnEvent("Click", onClickAboutBtn)
   UIClass.editModeBtn := ui.AddButton("x402 y14 w48 h24", "修改")
   UIClass.editModeBtn.OnEvent("Click", onClickEditModeBtn)
   ui.SetFont("s8 c7B6B58", "Microsoft YaHei UI")
@@ -177,7 +184,7 @@ Main() {
   ElevatePrivileges()
   InitGui()
   RefreshActionButtons()
-  AddLog("开始运行...")
+  AddLog("开始运行... 当前版本 " Config.appVersion)
 }
 Main()
 
@@ -200,6 +207,122 @@ ElevatePrivileges() {
     Run('*RunAs "' A_ScriptFullPath '"')
     ExitApp
   }
+}
+
+NormalizeVersion(version) {
+  if RegExMatch(version, "i)v?([\d\.]+)", &match) {
+    return match[1]
+  }
+  return ""
+}
+
+CompareVersions(leftVersion, rightVersion) {
+  left := StrSplit(NormalizeVersion(leftVersion), ".")
+  right := StrSplit(NormalizeVersion(rightVersion), ".")
+  maxLen := Max(left.Length, right.Length)
+
+  Loop maxLen {
+    leftPart := (A_Index <= left.Length) ? Floor(left[A_Index] + 0) : 0
+    rightPart := (A_Index <= right.Length) ? Floor(right[A_Index] + 0) : 0
+
+    if (leftPart < rightPart) {
+      return -1
+    }
+    if (leftPart > rightPart) {
+      return 1
+    }
+  }
+
+  return 0
+}
+
+GetLatestReleaseVersion() {
+  request := ComObject("WinHttp.WinHttpRequest.5.1")
+  request.Option[6] := false
+  request.Open("GET", Config.latestReleaseUrl, false)
+  request.SetRequestHeader("User-Agent", "roco_auto")
+  request.Send()
+
+  if (request.Status < 300 || request.Status >= 400) {
+    throw Error("请求失败，状态码: " request.Status)
+  }
+
+  location := request.GetResponseHeader("Location")
+  if !location {
+    throw Error("未获取到最新版本跳转地址")
+  }
+
+  if RegExMatch(location, "/tag/([^/?#]+)", &match) {
+    return match[1]
+  }
+
+  throw Error("无法解析最新版本号")
+}
+
+CheckForUpdates(showLatestWhenCurrent := true) {
+  try {
+    latestVersion := GetLatestReleaseVersion()
+  } catch as err {
+    MsgBox("检查更新失败：`n" err.Message, "检查更新", "Iconx")
+    return
+  }
+
+  compareResult := CompareVersions(Config.appVersion, latestVersion)
+  if (compareResult < 0) {
+    result := MsgBox(
+      "检测到新版本：`n当前版本: " Config.appVersion "`n最新版本: " latestVersion "`n`n是否打开 Release 页面？",
+      "检查更新",
+      "YesNo Iconi"
+    )
+    if (result = "Yes") {
+      Run(Config.latestReleaseUrl)
+    }
+    return
+  }
+
+  if showLatestWhenCurrent {
+    MsgBox(
+      "当前已是最新版本。`n当前版本: " Config.appVersion "`n最新版本: " latestVersion,
+      "检查更新",
+      "Iconi"
+    )
+  }
+}
+
+ShowAboutDialog() {
+  if UIClass.aboutUi {
+    try {
+      UIClass.aboutUi.Show()
+      UIClass.aboutUi.Opt("+AlwaysOnTop")
+      return
+    }
+  }
+
+  aboutUi := Gui("+Owner" UIClass.ui.Hwnd " +AlwaysOnTop -MaximizeBox -MinimizeBox", "关于")
+  aboutUi.BackColor := "F6F0E5"
+  aboutUi.SetFont("s10", "Microsoft YaHei UI")
+  aboutUi.AddText("x16 y16 w260", "洛克王国 自动避战")
+  aboutUi.SetFont("s9", "Microsoft YaHei UI")
+  aboutUi.AddText("x16 y44 w260", "当前版本: " Config.appVersion)
+  aboutUi.AddText("x16 y70 w300", "GitHub 开源地址")
+  repoEdit := aboutUi.AddEdit("x16 y92 w320 h42 ReadOnly -WantReturn", Config.projectUrl)
+  repoEdit.SetFont("s9", "Consolas")
+
+  openGitHubBtn := aboutUi.AddButton("x16 y148 w94 h28", "打开 GitHub")
+  openGitHubBtn.OnEvent("Click", (*) => Run(Config.projectUrl))
+
+  checkUpdateBtn := aboutUi.AddButton("x122 y148 w94 h28", "检查更新")
+  checkUpdateBtn.OnEvent("Click", (*) => CheckForUpdates())
+
+  openReleaseBtn := aboutUi.AddButton("x228 y148 w108 h28", "打开 Release")
+  openReleaseBtn.OnEvent("Click", (*) => Run(Config.latestReleaseUrl))
+
+  closeBtn := aboutUi.AddButton("x122 y184 w108 h28", "关闭")
+  closeBtn.OnEvent("Click", (*) => aboutUi.Hide())
+
+  aboutUi.OnEvent("Close", (*) => aboutUi.Hide())
+  UIClass.aboutUi := aboutUi
+  aboutUi.Show("w352 h228")
 }
 
 ApplyGuiNoActivate(hwnd, enabled) {
@@ -245,6 +368,10 @@ DrawAccurate(x, y, size := 20) {
 
 ; ================== 测试用 ==================
 SendOnce(*) {
+}
+
+onClickAboutBtn(*) {
+  ShowAboutDialog()
 }
 
 onClickEditModeBtn(*) {
