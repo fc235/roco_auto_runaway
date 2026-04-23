@@ -1,6 +1,5 @@
 ﻿#Requires AutoHotkey v2.0
 #SingleInstance Force
-;@Ahk2Exe-Set Version 1.5.0.0
 CoordMode "Pixel", "Screen"
 
 
@@ -37,8 +36,11 @@ class RunningStatus {
   static autoHandHoldingEnabled := false
   static uiEditMode := false
   static previousUiFocusHwnd := 0
-  static updateCheckExec := 0
+  static updateCheckPid := 0
   static updateCheckMode := ""
+  static updateCheckStdoutFile := ""
+  static updateCheckStderrFile := ""
+  static updateCheckScriptFile := ""
   static isInCombat := false
   static combatConfirmHits := 0
   static lastGatherTick := 0
@@ -189,6 +191,7 @@ Main() {
   RefreshActionButtons()
   OnExit(CleanupBeforeExit)
   AddLog("开始运行... 当前版本 " Config.appVersion)
+  AddLog("提示: 可在“关于”中通过“检查更新”查看 GitHub Release 最新版本")
   SetTimer(StartStartupUpdateCheck, -600)
 }
 Main()
@@ -254,49 +257,76 @@ ExtractReleaseVersionFromUrl(url) {
 
 HandleUpdateCheckResult(mode, latestVersion, errorMessage := "") {
   if errorMessage != "" {
-    if (mode = "startup") {
-      AddLog("更新检查失败: " errorMessage)
-    } else {
-      MsgBox("检查更新失败：`n" errorMessage, "检查更新", "Iconx")
-    }
+    AddLog("更新检查失败: " errorMessage)
     return
   }
 
   compareResult := CompareVersions(Config.appVersion, latestVersion)
   if (compareResult < 0) {
-    result := MsgBox(
-      "检测到新版本：`n当前版本: " Config.appVersion "`n最新版本: " latestVersion "`n`n是否打开 Release 页面？",
-      mode = "startup" ? "发现新版本" : "检查更新",
-      "YesNo Iconi"
-    )
-    if (result = "Yes") {
-      Run(Config.latestReleaseUrl)
-    }
+    AddLog("更新检查：发现新版本 " latestVersion "，可在“关于”中打开 Release")
     return
   }
 
-  if (mode = "startup") {
-    AddLog("更新检查：当前已是最新版本 " latestVersion)
-  } else {
-    MsgBox(
-      "当前已是最新版本。`n当前版本: " Config.appVersion "`n最新版本: " latestVersion,
-      "检查更新",
-      "Iconi"
-    )
+  if (compareResult > 0) {
+    AddLog("更新检查：当前版本新于 GitHub 发布版本 " latestVersion)
+    return
   }
+
+  AddLog("更新检查：当前已是最新版本 " latestVersion)
 }
 
 StartAsyncUpdateCheck(mode) {
-  if RunningStatus.updateCheckExec {
+  if RunningStatus.updateCheckPid {
     if (mode != "startup") {
-      MsgBox("更新检查正在进行中，请稍后再试。", "检查更新", "Iconi")
+      AddLog("更新检查正在进行中，请稍后再试")
     }
     return
   }
 
-  command := 'curl.exe -L -s -o NUL -w "%{url_effective}" "' Config.latestReleaseUrl '"'
+  if (mode != "startup") {
+    AddLog("正在检查 GitHub Release 更新...")
+  }
+
+  tick := A_TickCount
+  stdoutFile := A_Temp "\roco_auto_update_stdout_" tick ".txt"
+  stderrFile := A_Temp "\roco_auto_update_stderr_" tick ".txt"
+  scriptFile := A_Temp "\roco_auto_update_check_" tick ".ps1"
+  psScript :=
+  (
+  "$ErrorActionPreference = 'Stop'" "`r`n"
+  "$url = '" Config.latestReleaseUrl "'" "`r`n"
+  "$stdoutPath = '" stdoutFile "'" "`r`n"
+  "$stderrPath = '" stderrFile "'" "`r`n"
+  "try {" "`r`n"
+  "  $request = [System.Net.HttpWebRequest]::Create($url)" "`r`n"
+  "  $request.Method = 'HEAD'" "`r`n"
+  "  $request.AllowAutoRedirect = $false" "`r`n"
+  "  $response = $request.GetResponse()" "`r`n"
+  "  $location = $response.Headers['Location']" "`r`n"
+  "  if ([string]::IsNullOrWhiteSpace($location)) { $location = $response.ResponseUri.AbsoluteUri }" "`r`n"
+  "  [System.IO.File]::WriteAllText($stdoutPath, $location, [System.Text.Encoding]::UTF8)" "`r`n"
+  "} catch {" "`r`n"
+  "  $webResponse = $_.Exception.Response" "`r`n"
+  "  if ($webResponse -and $webResponse.Headers['Location']) {" "`r`n"
+  "    [System.IO.File]::WriteAllText($stdoutPath, $webResponse.Headers['Location'], [System.Text.Encoding]::UTF8)" "`r`n"
+  "    exit 0" "`r`n"
+  "  }" "`r`n"
+  "  [System.IO.File]::WriteAllText($stderrPath, $_.Exception.Message, [System.Text.Encoding]::UTF8)" "`r`n"
+  "  exit 1" "`r`n"
+  "}"
+  )
+
   try {
-    RunningStatus.updateCheckExec := ComObject("WScript.Shell").Exec(command)
+    FileDelete(scriptFile)
+  }
+  try {
+    FileAppend(psScript, scriptFile, "UTF-8")
+    command := 'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' scriptFile '"'
+    Run(command, , "Hide", &pid)
+    RunningStatus.updateCheckPid := pid
+    RunningStatus.updateCheckStdoutFile := stdoutFile
+    RunningStatus.updateCheckStderrFile := stderrFile
+    RunningStatus.updateCheckScriptFile := scriptFile
   } catch as err {
     HandleUpdateCheckResult(mode, "", err.Message)
     return
@@ -307,33 +337,52 @@ StartAsyncUpdateCheck(mode) {
 }
 
 StopAsyncUpdateCheck() {
-  exec := RunningStatus.updateCheckExec
+  pid := RunningStatus.updateCheckPid
+  stdoutFile := RunningStatus.updateCheckStdoutFile
+  stderrFile := RunningStatus.updateCheckStderrFile
+  scriptFile := RunningStatus.updateCheckScriptFile
   SetTimer(PollAsyncUpdateCheck, 0)
-  RunningStatus.updateCheckExec := 0
+  RunningStatus.updateCheckPid := 0
   RunningStatus.updateCheckMode := ""
+  RunningStatus.updateCheckStdoutFile := ""
+  RunningStatus.updateCheckStderrFile := ""
+  RunningStatus.updateCheckScriptFile := ""
 
-  if exec {
-    try exec.Terminate()
+  if pid {
+    try ProcessClose(pid)
   }
+
+  TryDeleteFile(stdoutFile)
+  TryDeleteFile(stderrFile)
+  TryDeleteFile(scriptFile)
 }
 
 PollAsyncUpdateCheck() {
-  exec := RunningStatus.updateCheckExec
-  if !exec {
+  pid := RunningStatus.updateCheckPid
+  if !pid {
     SetTimer(PollAsyncUpdateCheck, 0)
     return
   }
 
-  if (exec.Status = 0) {
+  if ProcessExist(pid) {
     return
   }
 
   SetTimer(PollAsyncUpdateCheck, 0)
-  stdout := Trim(exec.StdOut.ReadAll())
-  stderr := Trim(exec.StdErr.ReadAll())
+  stdoutFile := RunningStatus.updateCheckStdoutFile
+  stderrFile := RunningStatus.updateCheckStderrFile
+  scriptFile := RunningStatus.updateCheckScriptFile
+  stdout := FileExist(stdoutFile) ? Trim(FileRead(stdoutFile, "UTF-8")) : ""
+  stderr := FileExist(stderrFile) ? Trim(FileRead(stderrFile, "UTF-8")) : ""
   mode := RunningStatus.updateCheckMode
-  RunningStatus.updateCheckExec := 0
+  RunningStatus.updateCheckPid := 0
   RunningStatus.updateCheckMode := ""
+  RunningStatus.updateCheckStdoutFile := ""
+  RunningStatus.updateCheckStderrFile := ""
+  RunningStatus.updateCheckScriptFile := ""
+  TryDeleteFile(stdoutFile)
+  TryDeleteFile(stderrFile)
+  TryDeleteFile(scriptFile)
 
   latestVersion := ExtractReleaseVersionFromUrl(stdout)
   if (latestVersion = "") {
@@ -342,6 +391,12 @@ PollAsyncUpdateCheck() {
   }
 
   HandleUpdateCheckResult(mode, latestVersion)
+}
+
+TryDeleteFile(path) {
+  if path != "" && FileExist(path) {
+    try FileDelete(path)
+  }
 }
 
 StartStartupUpdateCheck() {
