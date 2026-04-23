@@ -1,5 +1,6 @@
 ﻿#Requires AutoHotkey v2.0
 #SingleInstance Force
+;@Ahk2Exe-Set Version 1.5.0.0
 CoordMode "Pixel", "Screen"
 
 
@@ -186,10 +187,15 @@ Main() {
   ElevatePrivileges()
   InitGui()
   RefreshActionButtons()
+  OnExit(CleanupBeforeExit)
   AddLog("开始运行... 当前版本 " Config.appVersion)
   SetTimer(StartStartupUpdateCheck, -600)
 }
 Main()
+
+CleanupBeforeExit(*) {
+  StopAsyncUpdateCheck()
+}
 
 HasArg(expectedArg) {
   for arg in A_Args {
@@ -298,6 +304,17 @@ StartAsyncUpdateCheck(mode) {
 
   RunningStatus.updateCheckMode := mode
   SetTimer(PollAsyncUpdateCheck, 200)
+}
+
+StopAsyncUpdateCheck() {
+  exec := RunningStatus.updateCheckExec
+  SetTimer(PollAsyncUpdateCheck, 0)
+  RunningStatus.updateCheckExec := 0
+  RunningStatus.updateCheckMode := ""
+
+  if exec {
+    try exec.Terminate()
+  }
 }
 
 PollAsyncUpdateCheck() {
